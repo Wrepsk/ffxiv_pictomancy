@@ -204,7 +204,8 @@ internal class DXRenderer : IDisposable
             }
         }
 
-        bool canMask = PctService.Hints.AutoDraw is not AutoDraw.NativeOverlay;
+        bool canMask = PctService.Hints.AutoDraw is not AutoDraw.NativeOverlay
+            and not AutoDraw.NamePlateOverlay;
         bool useBackbufferAlphaMask = canMask && PctService.Hints.UIMask is UIMask.BackbufferAlpha;
         bool useSubtractionMask = canMask && PctService.Hints.UIMask is UIMask.BackbufferSubtraction
             && UIMaskCapture?.HasSnapshot == true;
@@ -340,6 +341,7 @@ internal class DXRenderer : IDisposable
             ShaderResourceView? overrideMaskSRV = null;
             if (PctService.Hints.UIMask == UIMask.BackbufferSubtraction
                 && PctService.Hints.AutoDraw != AutoDraw.NativeOverlay
+                && PctService.Hints.AutoDraw != AutoDraw.NamePlateOverlay
                 && UIMaskCapture?.HasSnapshot == true)
             {
                 UIMaskCapture.BuildMask(backBuffer);
@@ -347,6 +349,7 @@ internal class DXRenderer : IDisposable
             }
 
             var maskEnabled = PctService.Hints.AutoDraw is not AutoDraw.NativeOverlay
+                and not AutoDraw.NamePlateOverlay
                 && (PctService.Hints.UIMask is UIMask.BackbufferAlpha || overrideMaskSRV != null);
             FSP.UpdateConstants(RenderContext, new()
             {

@@ -18,8 +18,14 @@ internal unsafe class PctOverlayNode : OverlayNode
         pctTextureNode.AttachNode(this);
     }
 
-    public void UpdateTexture(Texture2D texture2D, ShaderResourceView shaderResourceView)
+    public void UpdateTexture(Texture2D? texture2D, ShaderResourceView? shaderResourceView)
     {
+        if (texture2D == null || shaderResourceView == null)
+        {
+            IsVisible = false;
+            return;
+        }
+
         if (current != null)
         {
             if (current->D3D11Texture2D == (void*)texture2D.NativePointer)
