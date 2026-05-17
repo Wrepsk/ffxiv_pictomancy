@@ -35,13 +35,12 @@ internal unsafe class UIMaskCapture : IDisposable
     public ShaderResourceView? MaskSRV => _maskSRV;
     public bool HasSnapshot => _snapshot != null;
 
-    // Used to snapshot once we see a bind that includes a DSV.
-    // The first DSV-bearing back-buffer bind in a frame is the start of nameplate & other UI.
-    private bool _sawDsvBindThisFrame;
+    // Used to snapshot once at the first DSV-backed swapchain backbuffer bind for the frame.
+    private bool _capturedThisFrame;
 
     public void BeginFrame()
     {
-        _sawDsvBindThisFrame = false;
+        _capturedThisFrame = false;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -213,16 +212,14 @@ internal unsafe class UIMaskCapture : IDisposable
         }
 
         if (!deviceBackBufferBound) return;
-        if (_sawDsvBindThisFrame) return;
-        if (dsv != nint.Zero)
-        {
-            _sawDsvBindThisFrame = true;
-        }
+        if (_capturedThisFrame) return;
+        if (dsv == nint.Zero) return;
 
         EnsureSnapshot(targetD3D11);
 
         var src = new Texture2D(targetD3D11);
         _ctx.Device.ImmediateContext.CopyResource(src, _snapshot);
+        _capturedThisFrame = true;
     }
 
     private void EnsureSnapshot(nint deviceBackBufferD3D11)
