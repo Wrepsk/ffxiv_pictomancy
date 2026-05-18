@@ -26,6 +26,8 @@ internal class Image : IDisposable
         public Vector3 Center;
         public Vector3 Right;
         public Vector3 Down;
+        public Vector2 UvMin;
+        public Vector2 UvMax;
         public float OccludedAlpha;
         public float OcclusionTolerance;
         public float FadeStart;
@@ -109,6 +111,8 @@ internal class Image : IDisposable
                 float3 center : WORLD0;
                 float3 right : WORLD1;
                 float3 down : WORLD2;
+                float2 uvMin : TEXCOORD0;
+                float2 uvMax : TEXCOORD1;
                 float2 occlusionParams : OCCLUSIONPARAMS;
                 float2 fadeParams : FADEPARAMS;
                 float projectionHeight : HEIGHT;
@@ -132,7 +136,7 @@ internal class Image : IDisposable
 
                 VSOutput o;
                 o.projPos = mul(float4(worldPos, 1.0), viewProj);
-                o.uv = corner;
+                o.uv = lerp(inst.uvMin, inst.uvMax, corner);
                 o.occlusionParams = inst.occlusionParams;
                 o.fadeParams = inst.fadeParams;
                 return o;
@@ -185,6 +189,8 @@ internal class Image : IDisposable
                 nointerpolation float3 right : INSTRIGHT;
                 nointerpolation float3 down : INSTDOWN;
                 nointerpolation float3 normal : INSTNORMAL;
+                nointerpolation float2 uvMin : TEXCOORD0;
+                nointerpolation float2 uvMax : TEXCOORD1;
                 nointerpolation float projectionHeight : INSTHEIGHT;
                 nointerpolation float2 fadeParams : FADEPARAMS;
             };
@@ -213,6 +219,8 @@ internal class Image : IDisposable
                 o.right = instance.right;
                 o.down = instance.down;
                 o.normal = normal;
+                o.uvMin = instance.uvMin;
+                o.uvMax = instance.uvMax;
                 o.projectionHeight = instance.projectionHeight;
                 o.fadeParams = instance.fadeParams;
                 return o;
@@ -236,7 +244,8 @@ internal class Image : IDisposable
                 if (abs(v) > 0.5) discard;
                 if (abs(depthFromPlane) > halfHeight) discard;
 
-                float4 color = _userTex.Sample(_userSampler, float2(u + 0.5, v + 0.5));
+                float2 sourceUv = lerp(input.uvMin, input.uvMax, float2(u + 0.5, v + 0.5));
+                float4 color = _userTex.Sample(_userSampler, sourceUv);
                 float depthNorm = abs(depthFromPlane) / max(halfHeight, DIVIDE_EPS);
                 color.a *= saturate((1.0 - depthNorm) / HEIGHT_FADE_BAND);
 
@@ -263,6 +272,8 @@ internal class Image : IDisposable
             new InputElement("WORLD", 0, Format.R32G32B32_Float, -1, 0, InputClassification.PerInstanceData, 1),
             new InputElement("WORLD", 1, Format.R32G32B32_Float, -1, 0, InputClassification.PerInstanceData, 1),
             new InputElement("WORLD", 2, Format.R32G32B32_Float, -1, 0, InputClassification.PerInstanceData, 1),
+            new InputElement("TEXCOORD", 0, Format.R32G32_Float, -1, 0, InputClassification.PerInstanceData, 1),
+            new InputElement("TEXCOORD", 1, Format.R32G32_Float, -1, 0, InputClassification.PerInstanceData, 1),
             new InputElement("OCCLUSIONPARAMS", 0, Format.R32G32_Float, -1, 0, InputClassification.PerInstanceData, 1),
             new InputElement("FADEPARAMS", 0, Format.R32G32_Float, -1, 0, InputClassification.PerInstanceData, 1),
             new InputElement("HEIGHT", 0, Format.R32_Float, -1, 0, InputClassification.PerInstanceData, 1),
@@ -298,7 +309,7 @@ internal class Image : IDisposable
         _ctx.Context.UpdateSubresource(ref consts, _constantBuffer);
     }
 
-    public void Add(IntPtr nativePtr, Vector3 center, Vector3 right, Vector3 down, PctDxParams p)
+    public void Add(IntPtr nativePtr, Vector3 center, Vector3 right, Vector3 down, Vector2 uvMin, Vector2 uvMax, PctDxParams p)
     {
         if (nativePtr == IntPtr.Zero) return;
         // Skip degenerate plane (right parallel to down).
@@ -313,6 +324,8 @@ internal class Image : IDisposable
                 Center = center,
                 Right = right,
                 Down = down,
+                UvMin = uvMin,
+                UvMax = uvMax,
                 OccludedAlpha = p.OccludedAlpha,
                 OcclusionTolerance = p.OcclusionTolerance,
                 FadeStart = p.FadeStart,

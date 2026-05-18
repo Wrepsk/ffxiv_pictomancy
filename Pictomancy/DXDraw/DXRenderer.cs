@@ -558,8 +558,13 @@ internal class DXRenderer : IDisposable
 
     public void DrawImage(IntPtr nativePtr, Vector3 center, Vector3 right, Vector3 down, PctDxParams p)
     {
+        DrawImage(nativePtr, center, right, down, Vector2.Zero, Vector2.One, p);
+    }
+
+    public void DrawImage(IntPtr nativePtr, Vector3 center, Vector3 right, Vector3 down, Vector2 uvMin, Vector2 uvMax, PctDxParams p)
+    {
         if (Image == null) return;
-        Image.Add(nativePtr, center, right, down, p);
+        Image.Add(nativePtr, center, right, down, uvMin, uvMax, p);
         if (p.ProjectionHeight > 0f)
             AppendProjectedRun(ProjectionType.Image);
     }

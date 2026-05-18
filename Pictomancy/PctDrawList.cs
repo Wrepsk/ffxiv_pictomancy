@@ -341,10 +341,22 @@ public class PctDrawList : IDisposable
         AddImage(textureWrap.Handle, center, right, down, p);
     }
 
+    /// <inheritdoc cref="AddImage(nint, Vector3, Vector3, Vector3, Vector2, Vector2, PctDxParams?)"/>
+    public void AddImage(IDalamudTextureWrap textureWrap, Vector3 center, Vector3 right, Vector3 down, Vector2 uvMin, Vector2 uvMax, PctDxParams? p = null)
+    {
+        AddImage(textureWrap.Handle, center, right, down, uvMin, uvMax, p);
+    }
+
     /// <inheritdoc cref="AddImage"/>
     public void AddImage(ImTextureID textureId, Vector3 center, Vector3 right, Vector3 down, PctDxParams? p = null)
     {
         AddImage((nint)textureId.Handle, center, right, down, p);
+    }
+
+    /// <inheritdoc cref="AddImage(nint, Vector3, Vector3, Vector3, Vector2, Vector2, PctDxParams?)"/>
+    public void AddImage(ImTextureID textureId, Vector3 center, Vector3 right, Vector3 down, Vector2 uvMin, Vector2 uvMax, PctDxParams? p = null)
+    {
+        AddImage((nint)textureId.Handle, center, right, down, uvMin, uvMax, p);
     }
 
     /// <summary>
@@ -359,6 +371,14 @@ public class PctDrawList : IDisposable
     public void AddImage(nint nativePtr, Vector3 center, Vector3 right, Vector3 down, PctDxParams? p = null)
     {
         _renderer.DrawImage(nativePtr, center, right, down, p ?? DefaultParams);
+    }
+
+    /// <summary>
+    /// Draw a textured rectangle using only the requested normalized UV rectangle from the source texture.
+    /// </summary>
+    public void AddImage(nint nativePtr, Vector3 center, Vector3 right, Vector3 down, Vector2 uvMin, Vector2 uvMax, PctDxParams? p = null)
+    {
+        _renderer.DrawImage(nativePtr, center, right, down, uvMin, uvMax, p ?? DefaultParams);
     }
 
     /// <inheritdoc cref="AddSprite"/>
