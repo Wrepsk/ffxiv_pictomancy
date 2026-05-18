@@ -8,6 +8,8 @@ namespace Pictomancy.DXDraw;
 
 internal class DXRenderer : IDisposable
 {
+    private const long SceneCompositeStallWarningMilliseconds = 2000;
+
     public RenderContext RenderContext { get; init; } = new();
     internal RenderTarget? RenderTarget { get; private set; }
     public TriFill TriFill { get; init; }
@@ -30,8 +32,47 @@ internal class DXRenderer : IDisposable
     private PctDrawHints _sceneCompositeHints;
     private bool _sceneCompositePending;
     private bool _sceneCompositeFlushing;
+    private long _sceneCompositeScheduledUnixMs;
+    private long _lastSceneCompositeFlushUnixMs;
+    private long _sceneCompositeScheduleCount;
+    private long _sceneCompositeFlushCount;
+    private bool _sceneCompositeHookUnavailableLogged;
+    private bool _sceneCompositeStallLogged;
 
-    public bool HasPendingSceneComposite => _sceneCompositePending;
+    public bool HasPendingSceneComposite
+    {
+        get
+        {
+            MaybeLogSceneCompositeStall();
+            return _sceneCompositePending;
+        }
+    }
+
+    internal bool IsSceneCompositeHookUnavailable => UIMaskCapture?.IsHookInstalled != true;
+
+    internal string SceneCompositeStatus
+    {
+        get
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var pending = _sceneCompositePending
+                ? $"pending for {Math.Max(0, now - _sceneCompositeScheduledUnixMs)} ms"
+                : "not pending";
+            var lastFlush = _lastSceneCompositeFlushUnixMs > 0
+                ? $"{Math.Max(0, now - _lastSceneCompositeFlushUnixMs)} ms ago"
+                : "never";
+            return $"scene composite {pending}; scheduled {_sceneCompositeScheduleCount}; flushed {_sceneCompositeFlushCount}; last flush {lastFlush}; {BuildHookStatus(now)}";
+        }
+    }
+
+    internal bool IsSceneCompositeStalled(TimeSpan maxPendingAge)
+    {
+        if (!_sceneCompositePending || _sceneCompositeScheduledUnixMs <= 0)
+            return false;
+
+        var age = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _sceneCompositeScheduledUnixMs;
+        return age >= maxPendingAge.TotalMilliseconds;
+    }
 
     // Runs of contiguous same-type projected Adds, in user submission order.
     // Used so projected objects of different types draw in the same order they are added.
@@ -383,11 +424,38 @@ internal class DXRenderer : IDisposable
 
     internal void ScheduleSceneComposite(SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, PctDrawHints hints)
     {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _sceneCompositeScheduleCount++;
+        if (!_sceneCompositePending)
+        {
+            _sceneCompositeScheduledUnixMs = now;
+            _sceneCompositeStallLogged = false;
+        }
+
         _sceneCompositeDepth = sceneDepth;
         _sceneCompositeInfo = sceneInfo;
         _sceneCompositeNormal = sceneNormal;
         _sceneCompositeHints = hints with { AutoDraw = AutoDraw.SceneComposite, UIMask = UIMask.None };
         _sceneCompositePending = true;
+
+        if (IsSceneCompositeHookUnavailable && !_sceneCompositeHookUnavailableLogged)
+        {
+            _sceneCompositeHookUnavailableLogged = true;
+            PctService.Log.Warning($"[Pictomancy] SceneComposite cannot flush because the OMSetRenderTargets hook is unavailable. {SceneCompositeStatus}");
+        }
+    }
+
+    internal void CancelSceneComposite(string reason)
+    {
+        if (!_sceneCompositePending)
+            return;
+
+        PctService.Log.Warning($"[Pictomancy] SceneComposite pending render cancelled: {reason}. {SceneCompositeStatus}");
+        _sceneCompositePending = false;
+        _sceneCompositeDepth = null;
+        _sceneCompositeInfo = null;
+        _sceneCompositeNormal = null;
+        _sceneCompositeStallLogged = false;
     }
 
     private void FlushSceneCompositeFromHook()
@@ -415,6 +483,9 @@ internal class DXRenderer : IDisposable
                 _sceneCompositeInfo.SRV,
                 _sceneCompositeNormal.SRV,
                 compositeToBackBuffer: true);
+            _lastSceneCompositeFlushUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _sceneCompositeFlushCount++;
+            _sceneCompositeStallLogged = false;
         }
         catch (Exception e)
         {
@@ -428,6 +499,36 @@ internal class DXRenderer : IDisposable
             _sceneCompositeNormal = null;
             _sceneCompositeFlushing = false;
         }
+    }
+
+    private void MaybeLogSceneCompositeStall()
+    {
+        if (!_sceneCompositePending || _sceneCompositeStallLogged || _sceneCompositeScheduledUnixMs <= 0)
+            return;
+
+        var age = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _sceneCompositeScheduledUnixMs;
+        if (age < SceneCompositeStallWarningMilliseconds)
+            return;
+
+        _sceneCompositeStallLogged = true;
+        PctService.Log.Warning($"[Pictomancy] SceneComposite has been pending for {age} ms without a hook flush. {SceneCompositeStatus}");
+    }
+
+    private string BuildHookStatus(long now)
+    {
+        if (UIMaskCapture == null)
+            return "hook capture unavailable";
+
+        if (!UIMaskCapture.IsHookInstalled)
+            return "hook not installed";
+
+        var lastHook = UIMaskCapture.LastHookUnixMs > 0
+            ? $"{Math.Max(0, now - UIMaskCapture.LastHookUnixMs)} ms ago"
+            : "never";
+        var lastBind = UIMaskCapture.LastBackbufferDsvBindUnixMs > 0
+            ? $"{Math.Max(0, now - UIMaskCapture.LastBackbufferDsvBindUnixMs)} ms ago"
+            : "never";
+        return $"hook installed; OMSetRenderTargets calls {UIMaskCapture.HookCallCount}; backbuffer DSV binds {UIMaskCapture.BackbufferDsvBindCount}; last hook {lastHook}; last backbuffer bind {lastBind}";
     }
     public void DrawText(Vector2 position, string text)
     {

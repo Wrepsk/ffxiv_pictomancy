@@ -4,6 +4,7 @@ using SharpDX.D3DCompiler;
 using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Device = FFXIVClientStructs.FFXIV.Client.Graphics.Kernel.Device;
 using Format = SharpDX.DXGI.Format;
 
@@ -32,9 +33,18 @@ internal unsafe class UIMaskCapture : IDisposable
 
     private Texture2D? _bbCopy;
     private ShaderResourceView? _bbCopySRV;
+    private long _hookCallCount;
+    private long _backbufferDsvBindCount;
+    private long _lastHookUnixMs;
+    private long _lastBackbufferDsvBindUnixMs;
 
     public ShaderResourceView? MaskSRV => _maskSRV;
     public bool HasSnapshot => _snapshot != null;
+    public bool IsHookInstalled => _hook != null;
+    public long HookCallCount => Interlocked.Read(ref _hookCallCount);
+    public long BackbufferDsvBindCount => Interlocked.Read(ref _backbufferDsvBindCount);
+    public long LastHookUnixMs => Interlocked.Read(ref _lastHookUnixMs);
+    public long LastBackbufferDsvBindUnixMs => Interlocked.Read(ref _lastBackbufferDsvBindUnixMs);
 
     // Used to snapshot once at the first DSV-backed swapchain backbuffer bind for the frame.
     private bool _capturedThisFrame;
@@ -169,10 +179,19 @@ internal unsafe class UIMaskCapture : IDisposable
 
     private void OMSetRenderTargetsDetour(nint deviceContext, uint numViews, nint* rtvs, nint dsv)
     {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        Interlocked.Increment(ref _hookCallCount);
+        Interlocked.Exchange(ref _lastHookUnixMs, now);
+
         bool isBackbufferDsvBind = false;
         try
         {
             isBackbufferDsvBind = MaybeCapturePreBind(numViews, rtvs, dsv);
+            if (isBackbufferDsvBind)
+            {
+                Interlocked.Increment(ref _backbufferDsvBindCount);
+                Interlocked.Exchange(ref _lastBackbufferDsvBindUnixMs, now);
+            }
         }
         catch (Exception e)
         {

@@ -38,6 +38,11 @@ public class PctService
     private static bool _kamiInitialized;
     private static bool _vfxFrameworkSubscribed;
 
+    public static string SceneCompositeStatus => _dxRenderer?.SceneCompositeStatus ?? "scene composite unavailable: DX renderer is not initialized";
+    public static bool IsSceneCompositeHookUnavailable => _dxRenderer?.IsSceneCompositeHookUnavailable ?? true;
+    public static bool IsSceneCompositeStalled(TimeSpan maxPendingAge) => _dxRenderer?.IsSceneCompositeStalled(maxPendingAge) == true;
+    public static void CancelSceneComposite(string reason) => _dxRenderer?.CancelSceneComposite(reason);
+
     /// <summary>
     /// Initialize Pictomancy. Returns a disposable handle; hold it for your plugin's lifetime and dispose it on plugin shutdown.
     /// Throws if called while a previous initialization is still alive (dispose the prior handle first).
