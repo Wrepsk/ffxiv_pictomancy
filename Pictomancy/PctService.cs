@@ -154,6 +154,8 @@ public class PctService
         Hints = hints ?? new();
         if (!Hints.DrawInCutscene && IsInCutscene()) return null;
         if (!Hints.DrawWhenFaded && IsFaded()) return null;
+        if (Hints.AutoDraw is AutoDraw.SceneComposite && _dxRenderer.HasPendingSceneComposite)
+            return null;
 
         return DrawList = new PctDrawList(
             imguidrawlist,
@@ -163,7 +165,8 @@ public class PctService
             _sceneNormal,
             _overlayNode,
             _namePlateOverlay,
-            Hints.DefaultParams
+            Hints.DefaultParams,
+            Hints.AutoDraw is AutoDraw.SceneComposite
         );
     }
 

@@ -20,15 +20,17 @@ public class PctDrawList : IDisposable
     internal readonly PctNamePlateOverlay? _namePlateOverlay;
     internal readonly ImGuiRenderer _fallbackRenderer;
     internal readonly bool isMyWindow;
+    private readonly bool deferRenderFrame;
     private PctTexture? _texture;
     internal bool Finalized => _texture != null;
 
     /// <summary>Default rendering params applied to any shape that doesn't pass an explicit override.</summary>
     public PctDxParams DefaultParams { get; }
 
-    internal PctDrawList(ImDrawListPtr? drawlist, DXRenderer renderer, SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, PctOverlayNode? overlayNode = null, PctNamePlateOverlay? namePlateOverlay = null, PctDxParams? defaultParams = null)
+    internal PctDrawList(ImDrawListPtr? drawlist, DXRenderer renderer, SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, PctOverlayNode? overlayNode = null, PctNamePlateOverlay? namePlateOverlay = null, PctDxParams? defaultParams = null, bool deferRenderFrame = false)
     {
         DefaultParams = defaultParams ?? new PctDxParams();
+        this.deferRenderFrame = deferRenderFrame;
         if (drawlist != null)
         {
             _drawList = (ImDrawListPtr)drawlist;
@@ -56,10 +58,13 @@ public class PctDrawList : IDisposable
         _overlayNode = overlayNode;
         _namePlateOverlay = namePlateOverlay;
         _texture = null;
-        _renderer.BeginFrame();
-        _sceneDepth.Update();
-        _sceneInfo.Update();
-        _sceneNormal.Update();
+        if (!deferRenderFrame)
+        {
+            _renderer.BeginFrame();
+            _sceneDepth.Update();
+            _sceneInfo.Update();
+            _sceneNormal.Update();
+        }
         _fallbackRenderer = new(_drawList);
     }
 
@@ -76,6 +81,18 @@ public class PctDrawList : IDisposable
     public void Dispose()
     {
         if (PctService.DrawList == this) PctService.DrawList = null;
+
+        if (PctService.Hints.AutoDraw is AutoDraw.SceneComposite)
+        {
+            _overlayNode?.IsVisible = false;
+            _namePlateOverlay?.Hide();
+            _renderer.ScheduleSceneComposite(_sceneDepth, _sceneInfo, _sceneNormal, PctService.Hints);
+            _dotQueue.Clear();
+            _textQueue.Clear();
+            if (isMyWindow)
+                ImGui.End();
+            return;
+        }
 
         PctTexture texture = DrawToTexture();
         switch (PctService.Hints.AutoDraw)

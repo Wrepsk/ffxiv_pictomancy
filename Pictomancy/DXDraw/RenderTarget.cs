@@ -130,6 +130,33 @@ internal class RenderTarget : IDisposable
         fsp.Draw(ctx, _baseSRV, overrideMaskSRV ?? _backBufferSRV!);
     }
 
+    public void ExecuteFSPToBackBuffer(RenderContext ctx, Texture2D backBuffer, FullScreenPass fsp)
+    {
+        var desc = backBuffer.Description;
+        using var backBufferRTV = new RenderTargetView(ctx.Device, backBuffer);
+        using var blend = new BlendState(ctx.Device, CreateCompositeBlendDescription());
+
+        ctx.Context.OutputMerger.SetBlendState(blend);
+        ctx.Context.OutputMerger.SetTargets(backBufferRTV);
+        ctx.Context.Rasterizer.SetViewport(0, 0, desc.Width, desc.Height);
+
+        fsp.Draw(ctx, _baseSRV, _baseSRV);
+    }
+
+    private static BlendStateDescription CreateCompositeBlendDescription()
+    {
+        var blendDescription = BlendStateDescription.Default();
+        blendDescription.RenderTarget[0].IsBlendEnabled = true;
+        blendDescription.RenderTarget[0].SourceBlend = BlendOption.SourceAlpha;
+        blendDescription.RenderTarget[0].DestinationBlend = BlendOption.InverseSourceAlpha;
+        blendDescription.RenderTarget[0].BlendOperation = BlendOperation.Add;
+        blendDescription.RenderTarget[0].SourceAlphaBlend = BlendOption.One;
+        blendDescription.RenderTarget[0].DestinationAlphaBlend = BlendOption.InverseSourceAlpha;
+        blendDescription.RenderTarget[0].AlphaBlendOperation = BlendOperation.Add;
+        blendDescription.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
+        return blendDescription;
+    }
+
     private void ValidateBackBufferResources(Device device, Texture2DDescription backBufferDesc)
     {
         if (_backBufferCopy == null ||

@@ -24,6 +24,14 @@ internal class DXRenderer : IDisposable
 
     private readonly DepthStencilState _clipZoneDSS;
     private readonly DepthStencilState _shapeDSS;
+    private SceneDepth? _sceneCompositeDepth;
+    private SceneInfo? _sceneCompositeInfo;
+    private SceneNormal? _sceneCompositeNormal;
+    private PctDrawHints _sceneCompositeHints;
+    private bool _sceneCompositePending;
+    private bool _sceneCompositeFlushing;
+
+    public bool HasPendingSceneComposite => _sceneCompositePending;
 
     // Runs of contiguous same-type projected Adds, in user submission order.
     // Used so projected objects of different types draw in the same order they are added.
@@ -117,7 +125,7 @@ internal class DXRenderer : IDisposable
 
         try
         {
-            UIMaskCapture = new UIMaskCapture(RenderContext, PctService.HookProvider);
+            UIMaskCapture = new UIMaskCapture(RenderContext, PctService.HookProvider, FlushSceneCompositeFromHook);
         }
         catch (Exception e)
         {
@@ -205,7 +213,8 @@ internal class DXRenderer : IDisposable
         }
 
         bool canMask = PctService.Hints.AutoDraw is not AutoDraw.NativeOverlay
-            and not AutoDraw.NamePlateOverlay;
+            and not AutoDraw.NamePlateOverlay
+            and not AutoDraw.SceneComposite;
         bool useBackbufferAlphaMask = canMask && PctService.Hints.UIMask is UIMask.BackbufferAlpha;
         bool useSubtractionMask = canMask && PctService.Hints.UIMask is UIMask.BackbufferSubtraction
             && UIMaskCapture?.HasSnapshot == true;
@@ -229,7 +238,7 @@ internal class DXRenderer : IDisposable
         RenderTarget.Bind(RenderContext);
     }
 
-    internal unsafe RenderTarget EndFrame(ShaderResourceView? sceneDepthSRV, SharpDX.Vector2 sceneDepthUvScale, ShaderResourceView? sceneInfoSRV, ShaderResourceView? sceneNormalSRV)
+    internal unsafe RenderTarget EndFrame(ShaderResourceView? sceneDepthSRV, SharpDX.Vector2 sceneDepthUvScale, ShaderResourceView? sceneInfoSRV, ShaderResourceView? sceneNormalSRV, bool compositeToBackBuffer = false)
     {
         var rtSize = new Vector2(ViewportSize.X, ViewportSize.Y);
         var pixelToUv = new Vector2(sceneDepthUvScale.X, sceneDepthUvScale.Y) / rtSize;
@@ -339,17 +348,21 @@ internal class DXRenderer : IDisposable
             var backBuffer = new Texture2D((IntPtr)device->SwapChain->BackBuffer->D3D11Texture2D);
 
             ShaderResourceView? overrideMaskSRV = null;
-            if (PctService.Hints.UIMask == UIMask.BackbufferSubtraction
+            if (!compositeToBackBuffer
+                && PctService.Hints.UIMask == UIMask.BackbufferSubtraction
                 && PctService.Hints.AutoDraw != AutoDraw.NativeOverlay
                 && PctService.Hints.AutoDraw != AutoDraw.NamePlateOverlay
+                && PctService.Hints.AutoDraw != AutoDraw.SceneComposite
                 && UIMaskCapture?.HasSnapshot == true)
             {
                 UIMaskCapture.BuildMask(backBuffer);
                 overrideMaskSRV = UIMaskCapture.MaskSRV;
             }
 
-            var maskEnabled = PctService.Hints.AutoDraw is not AutoDraw.NativeOverlay
+            var maskEnabled = !compositeToBackBuffer
+                && PctService.Hints.AutoDraw is not AutoDraw.NativeOverlay
                 and not AutoDraw.NamePlateOverlay
+                and not AutoDraw.SceneComposite
                 && (PctService.Hints.UIMask is UIMask.BackbufferAlpha || overrideMaskSRV != null);
             FSP.UpdateConstants(RenderContext, new()
             {
@@ -357,7 +370,10 @@ internal class DXRenderer : IDisposable
                 UseMask = maskEnabled ? 1f : 0f,
             });
 
-            RenderTarget!.ExecuteFSP(RenderContext, backBuffer, FSP, overrideMaskSRV);
+            if (compositeToBackBuffer)
+                RenderTarget!.ExecuteFSPToBackBuffer(RenderContext, backBuffer, FSP);
+            else
+                RenderTarget!.ExecuteFSP(RenderContext, backBuffer, FSP, overrideMaskSRV);
         }
         else
         {
@@ -366,6 +382,55 @@ internal class DXRenderer : IDisposable
 
         RenderContext.Execute();
         return RenderTarget;
+    }
+
+    internal void ScheduleSceneComposite(SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, PctDrawHints hints)
+    {
+        _sceneCompositeDepth = sceneDepth;
+        _sceneCompositeInfo = sceneInfo;
+        _sceneCompositeNormal = sceneNormal;
+        _sceneCompositeHints = hints with { AutoDraw = AutoDraw.SceneComposite, UIMask = UIMask.None };
+        _sceneCompositePending = true;
+    }
+
+    private void FlushSceneCompositeFromHook()
+    {
+        if (!_sceneCompositePending || _sceneCompositeFlushing)
+            return;
+
+        if (_sceneCompositeDepth == null || _sceneCompositeInfo == null || _sceneCompositeNormal == null)
+            return;
+
+        _sceneCompositePending = false;
+        _sceneCompositeFlushing = true;
+
+        var previousHints = PctService.Hints;
+        PctService.Hints = _sceneCompositeHints;
+        try
+        {
+            BeginFrame();
+            _sceneCompositeDepth.Update();
+            _sceneCompositeInfo.Update();
+            _sceneCompositeNormal.Update();
+            EndFrame(
+                _sceneCompositeDepth.SRV,
+                _sceneCompositeDepth.UvScale,
+                _sceneCompositeInfo.SRV,
+                _sceneCompositeNormal.SRV,
+                compositeToBackBuffer: true);
+        }
+        catch (Exception e)
+        {
+            PctService.Log.Error(e, "[Pictomancy] SceneComposite flush failed.");
+        }
+        finally
+        {
+            PctService.Hints = previousHints;
+            _sceneCompositeDepth = null;
+            _sceneCompositeInfo = null;
+            _sceneCompositeNormal = null;
+            _sceneCompositeFlushing = false;
+        }
     }
     public void DrawText(Vector2 position, string text)
     {

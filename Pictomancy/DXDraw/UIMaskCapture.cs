@@ -17,6 +17,7 @@ internal unsafe class UIMaskCapture : IDisposable
 
     private readonly RenderContext _ctx;
     private readonly Hook<OMSetRenderTargetsDelegate>? _hook;
+    private readonly Action? _afterBackbufferDsvBind;
 
     private readonly VertexShader _vs;
     private readonly PixelShader  _ps;
@@ -52,9 +53,10 @@ internal unsafe class UIMaskCapture : IDisposable
         public float StrongRgbThreshold;
     }
 
-    public UIMaskCapture(RenderContext ctx, IGameInteropProvider hookProvider)
+    public UIMaskCapture(RenderContext ctx, IGameInteropProvider hookProvider, Action? afterBackbufferDsvBind = null)
     {
         _ctx = ctx;
+        _afterBackbufferDsvBind = afterBackbufferDsvBind;
 
         const string shaderSource = """
             Texture2D    backBuffer     : register(t0);
@@ -167,9 +169,10 @@ internal unsafe class UIMaskCapture : IDisposable
 
     private void OMSetRenderTargetsDetour(nint deviceContext, uint numViews, nint* rtvs, nint dsv)
     {
+        bool isBackbufferDsvBind = false;
         try
         {
-            MaybeCapturePreBind(numViews, rtvs, dsv);
+            isBackbufferDsvBind = MaybeCapturePreBind(numViews, rtvs, dsv);
         }
         catch (Exception e)
         {
@@ -177,11 +180,23 @@ internal unsafe class UIMaskCapture : IDisposable
         }
 
         _hook!.Original(deviceContext, numViews, rtvs, dsv);
+
+        if (isBackbufferDsvBind)
+        {
+            try
+            {
+                _afterBackbufferDsvBind?.Invoke();
+            }
+            catch (Exception e)
+            {
+                PctService.Log.Error(e, "[Pictomancy] UIMaskCapture: post-bind callback failed");
+            }
+        }
     }
 
-    private void MaybeCapturePreBind(uint numViews, nint* rtvs, nint dsv)
+    private bool MaybeCapturePreBind(uint numViews, nint* rtvs, nint dsv)
     {
-        if (numViews == 0) return;
+        if (numViews == 0) return false;
 
         var device = Device.Instance();
         if (device == null
@@ -189,11 +204,11 @@ internal unsafe class UIMaskCapture : IDisposable
             || device->SwapChain->BackBuffer == null
             || device->SwapChain->BackBuffer->D3D11Texture2D == null)
         {
-            return;
+            return false;
         }
 
         nint targetD3D11 = (nint)device->SwapChain->BackBuffer->D3D11Texture2D;
-        if (targetD3D11 == nint.Zero) return;
+        if (targetD3D11 == nint.Zero) return false;
 
         bool deviceBackBufferBound = false;
         for (uint i = 0; i < numViews; i++)
@@ -211,15 +226,16 @@ internal unsafe class UIMaskCapture : IDisposable
             }
         }
 
-        if (!deviceBackBufferBound) return;
-        if (_capturedThisFrame) return;
-        if (dsv == nint.Zero) return;
+        if (!deviceBackBufferBound) return false;
+        if (dsv == nint.Zero) return false;
+        if (_capturedThisFrame) return true;
 
         EnsureSnapshot(targetD3D11);
 
         var src = new Texture2D(targetD3D11);
         _ctx.Device.ImmediateContext.CopyResource(src, _snapshot);
         _capturedThisFrame = true;
+        return true;
     }
 
     private void EnsureSnapshot(nint deviceBackBufferD3D11)
