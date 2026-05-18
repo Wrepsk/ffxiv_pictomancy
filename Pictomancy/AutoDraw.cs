@@ -8,8 +8,6 @@ public enum AutoDraw
     ImGuiOverlay = 1,
     /// <summary>Auto-display the result via the game's native overlay node (lower UI layer; carries a 1-frame display lag).</summary>
     NativeOverlay = 2,
-    /// <summary>Auto-display the result as a native node attached behind the NamePlate addon (experimental; carries a 1-frame display lag).</summary>
-    NamePlateOverlay = 3,
     /// <summary>Experimental: composite into the game backbuffer from a D3D11 hook before native UI/nameplates when the frame timing allows it.</summary>
-    SceneComposite = 4,
+    SceneComposite = 3,
 }

@@ -17,7 +17,6 @@ public class PctDrawList : IDisposable
     internal readonly SceneInfo _sceneInfo;
     internal readonly SceneNormal _sceneNormal;
     internal readonly PctOverlayNode? _overlayNode;
-    internal readonly PctNamePlateOverlay? _namePlateOverlay;
     internal readonly ImGuiRenderer _fallbackRenderer;
     internal readonly bool isMyWindow;
     private readonly bool deferRenderFrame;
@@ -27,7 +26,7 @@ public class PctDrawList : IDisposable
     /// <summary>Default rendering params applied to any shape that doesn't pass an explicit override.</summary>
     public PctDxParams DefaultParams { get; }
 
-    internal PctDrawList(ImDrawListPtr? drawlist, DXRenderer renderer, SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, PctOverlayNode? overlayNode = null, PctNamePlateOverlay? namePlateOverlay = null, PctDxParams? defaultParams = null, bool deferRenderFrame = false)
+    internal PctDrawList(ImDrawListPtr? drawlist, DXRenderer renderer, SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, PctOverlayNode? overlayNode = null, PctDxParams? defaultParams = null, bool deferRenderFrame = false)
     {
         DefaultParams = defaultParams ?? new PctDxParams();
         this.deferRenderFrame = deferRenderFrame;
@@ -56,7 +55,6 @@ public class PctDrawList : IDisposable
         _sceneInfo = sceneInfo;
         _sceneNormal = sceneNormal;
         _overlayNode = overlayNode;
-        _namePlateOverlay = namePlateOverlay;
         _texture = null;
         if (!deferRenderFrame)
         {
@@ -85,7 +83,6 @@ public class PctDrawList : IDisposable
         if (PctService.Hints.AutoDraw is AutoDraw.SceneComposite)
         {
             _overlayNode?.IsVisible = false;
-            _namePlateOverlay?.Hide();
             _renderer.ScheduleSceneComposite(_sceneDepth, _sceneInfo, _sceneNormal, PctService.Hints);
             _dotQueue.Clear();
             _textQueue.Clear();
@@ -102,20 +99,10 @@ public class PctDrawList : IDisposable
                 {
                     goto case AutoDraw.ImGuiOverlay;
                 }
-                _namePlateOverlay?.Hide();
                 _overlayNode.IsVisible = true;
                 _overlayNode.UpdateTexture(_renderer.RenderTarget?.ProcessedTexture, _renderer.RenderTarget?.ProcessedSRV);
                 break;
-            case AutoDraw.NamePlateOverlay:
-                if (_namePlateOverlay == null)
-                {
-                    goto case AutoDraw.NativeOverlay;
-                }
-                _overlayNode?.IsVisible = false;
-                _namePlateOverlay.UpdateTexture(_renderer.RenderTarget?.ProcessedTexture, _renderer.RenderTarget?.ProcessedSRV);
-                break;
             case AutoDraw.ImGuiOverlay:
-                _namePlateOverlay?.Hide();
                 _drawList.AddImage(
                     texture.TextureId,
                     ImGuiHelpers.MainViewport.Pos,
@@ -123,7 +110,6 @@ public class PctDrawList : IDisposable
                 goto default;
             default:
                 _overlayNode?.IsVisible = false;
-                _namePlateOverlay?.Hide();
                 break;
         }
 

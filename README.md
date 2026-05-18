@@ -145,7 +145,7 @@ UI masking is used to hide the pictomancy overlay behind the native UI.
 * AutoDraw supports a NativeOverlay option which draws behind the native UI but has two issues:
     1. It does not display over Nameplates.
     1. It lags behind by one frame which causes ghosting effects when moving.
-* AutoDraw also supports an experimental NamePlateOverlay option that attaches the output behind the native NamePlate addon so nameplates can render over Pictomancy output. It carries the same one-frame texture lag as NativeOverlay.
+* AutoDraw also supports an experimental SceneComposite option that composites into the game backbuffer from a D3D11 hook before native UI/nameplates when the frame timing allows it.
 <img src="ReadmeImages/autodrawAndMask.png">
 
 ### Drawing with in-game VFX

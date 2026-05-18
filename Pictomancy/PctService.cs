@@ -1,6 +1,5 @@
 ﻿global using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Conditions;
-using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -21,7 +20,6 @@ public class PctService
     [PluginService] internal static ISigScanner SigScanner { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IGameInteropProvider HookProvider { get; private set; } = null!;
-    [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
 
     private static DXRenderer? _dxRenderer;
     private static SceneDepth? _sceneDepth;
@@ -31,7 +29,6 @@ public class PctService
     private static VfxRenderer? _vfxRenderer;
     private static OverlayController? _overlayController;
     private static PctOverlayNode? _overlayNode;
-    private static PctNamePlateOverlay? _namePlateOverlay;
     public static VfxRenderer VfxRenderer => _vfxRenderer;
 
     internal static PctDrawList DrawList;
@@ -64,7 +61,6 @@ public class PctService
                 {
                     _overlayController = new();
                     _overlayNode = new();
-                    _namePlateOverlay = new();
                     _overlayController.AddNode(_overlayNode);
                 });
             }
@@ -96,8 +92,6 @@ public class PctService
         if (!_initialized) return;
         _initialized = false;
 
-        _namePlateOverlay?.Dispose();
-        _namePlateOverlay = null;
         _overlayController?.Dispose();
         _overlayController = null;
         if (_kamiInitialized)
@@ -164,7 +158,6 @@ public class PctService
             _sceneInfo,
             _sceneNormal,
             _overlayNode,
-            _namePlateOverlay,
             Hints.DefaultParams,
             Hints.AutoDraw is AutoDraw.SceneComposite
         );
