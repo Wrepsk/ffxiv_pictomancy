@@ -213,7 +213,51 @@ internal unsafe class UIMaskCapture : IDisposable
         }
     }
 
-    private bool MaybeCapturePreBind(uint numViews, nint* rtvs, nint dsv)
+    private unsafe bool IsMatch(nint resource, nint targetD3D11)
+    {
+        if (resource == targetD3D11) return true;
+
+        Guid iid = new Guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+        nint resVtable = *(nint*)resource;
+        var queryInterface = (delegate* unmanaged[Stdcall]<nint, Guid*, out nint, int>)*(nint*)(resVtable + 0);
+        
+        if (queryInterface(resource, &iid, out nint resTex) == 0)
+        {
+            nint texVtable = *(nint*)resTex;
+            var getDesc = (delegate* unmanaged[Stdcall]<nint, out Texture2DDescription, void>)*(nint*)(texVtable + 10 * sizeof(nint));
+            
+            Texture2DDescription resDesc;
+            getDesc(resTex, out resDesc);
+            
+            var releaseTex = (delegate* unmanaged[Stdcall]<nint, uint>)*(nint*)(texVtable + 2 * sizeof(nint));
+            releaseTex(resTex);
+
+            nint targetVtable = *(nint*)targetD3D11;
+            var queryTarget = (delegate* unmanaged[Stdcall]<nint, Guid*, out nint, int>)*(nint*)(targetVtable + 0);
+            
+            if (queryTarget(targetD3D11, &iid, out nint targetTex) == 0)
+            {
+                nint tgtTexVtable = *(nint*)targetTex;
+                var getTargetDesc = (delegate* unmanaged[Stdcall]<nint, out Texture2DDescription, void>)*(nint*)(tgtTexVtable + 10 * sizeof(nint));
+                
+                Texture2DDescription tgtDesc;
+                getTargetDesc(targetTex, out tgtDesc);
+                
+                var releaseTgtTex = (delegate* unmanaged[Stdcall]<nint, uint>)*(nint*)(tgtTexVtable + 2 * sizeof(nint));
+                releaseTgtTex(targetTex);
+
+                if (resDesc.Width == tgtDesc.Width &&
+                    resDesc.Height == tgtDesc.Height &&
+                    resDesc.Format == tgtDesc.Format)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private unsafe bool MaybeCapturePreBind(uint numViews, nint* rtvs, nint dsv)
     {
         if (numViews == 0) return false;
 
@@ -226,33 +270,56 @@ internal unsafe class UIMaskCapture : IDisposable
             return false;
         }
 
+        var rtm = FFXIVClientStructs.FFXIV.Client.Graphics.Render.RenderTargetManager.Instance();
+        bool isResolutionScaled = false;
+        if (rtm != null && rtm->DepthStencil != null)
+        {
+            isResolutionScaled = rtm->DepthStencil->ActualWidth != device->Width || rtm->DepthStencil->ActualHeight != device->Height;
+        }
+
+        if (!isResolutionScaled && dsv == nint.Zero) return false;
+
         nint targetD3D11 = (nint)device->SwapChain->BackBuffer->D3D11Texture2D;
         if (targetD3D11 == nint.Zero) return false;
 
         bool deviceBackBufferBound = false;
+        nint capturedResource = nint.Zero;
+
         for (uint i = 0; i < numViews; i++)
         {
             nint rtv = rtvs[i];
             if (rtv == nint.Zero) continue;
 
-            var view  = new RenderTargetView(rtv);
-            var tex2d = view.Resource.QueryInterfaceOrNull<Texture2D>();
-            if (tex2d == null) continue;
-            if (tex2d.NativePointer == targetD3D11)
+            nint vtable = *(nint*)rtv;
+            var getResource = (delegate* unmanaged[Stdcall]<nint, out nint, void>)*(nint*)(vtable + 7 * sizeof(nint));
+            getResource(rtv, out nint resource);
+
+            if (resource != nint.Zero)
             {
-                deviceBackBufferBound = true;
-                break;
+                bool isTarget = IsMatch(resource, targetD3D11);
+                
+                nint resVtable = *(nint*)resource;
+                var release = (delegate* unmanaged[Stdcall]<nint, uint>)*(nint*)(resVtable + 2 * sizeof(nint));
+                release(resource);
+
+                if (isTarget)
+                {
+                    deviceBackBufferBound = true;
+                    capturedResource = resource;
+                    break;
+                }
             }
         }
 
         if (!deviceBackBufferBound) return false;
-        if (dsv == nint.Zero) return false;
         if (_capturedThisFrame) return true;
 
-        EnsureSnapshot(targetD3D11);
+        EnsureSnapshot(capturedResource);
 
-        var src = new Texture2D(targetD3D11);
+        var src = new Texture2D(capturedResource);
         _ctx.Device.ImmediateContext.CopyResource(src, _snapshot);
+        GC.SuppressFinalize(src);
+
         _capturedThisFrame = true;
         return true;
     }
@@ -261,6 +328,7 @@ internal unsafe class UIMaskCapture : IDisposable
     {
         var src  = new Texture2D(deviceBackBufferD3D11);
         var desc = src.Description;
+        GC.SuppressFinalize(src);
 
         if (_snapshot != null
             && _snapshot.Description.Width  == desc.Width
