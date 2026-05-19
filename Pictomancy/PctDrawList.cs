@@ -20,6 +20,7 @@ public class PctDrawList : IDisposable
     internal readonly ImGuiRenderer _fallbackRenderer;
     internal readonly bool isMyWindow;
     private readonly bool deferRenderFrame;
+    private readonly DXRenderer.FrameState? deferredFrameState;
     private PctTexture? _texture;
     internal bool Finalized => _texture != null;
 
@@ -63,6 +64,11 @@ public class PctDrawList : IDisposable
             _sceneInfo.Update();
             _sceneNormal.Update();
         }
+        else
+        {
+            deferredFrameState = _renderer.CaptureFrameState();
+        }
+
         _fallbackRenderer = new(_drawList);
     }
 
@@ -83,7 +89,7 @@ public class PctDrawList : IDisposable
         if (PctService.Hints.AutoDraw is AutoDraw.SceneComposite)
         {
             _overlayNode?.IsVisible = false;
-            _renderer.ScheduleSceneComposite(_sceneDepth, _sceneInfo, _sceneNormal, PctService.Hints);
+            _renderer.ScheduleSceneComposite(_sceneDepth, _sceneInfo, _sceneNormal, deferredFrameState ?? _renderer.CaptureFrameState(), PctService.Hints);
             _dotQueue.Clear();
             _textQueue.Clear();
             if (isMyWindow)

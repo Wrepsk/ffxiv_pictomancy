@@ -10,6 +10,12 @@ internal class DXRenderer : IDisposable
 {
     private const long SceneCompositeStallWarningMilliseconds = 2000;
 
+    internal readonly record struct FrameState(
+        SharpDX.Matrix ViewProj,
+        SharpDX.Vector2 ViewportSize,
+        Vector2 ProjScale,
+        Vector3 CameraPos);
+
     public RenderContext RenderContext { get; init; } = new();
     internal RenderTarget? RenderTarget { get; private set; }
     public TriFill TriFill { get; init; }
@@ -29,6 +35,7 @@ internal class DXRenderer : IDisposable
     private SceneDepth? _sceneCompositeDepth;
     private SceneInfo? _sceneCompositeInfo;
     private SceneNormal? _sceneCompositeNormal;
+    private FrameState? _sceneCompositeFrameState;
     private PctDrawHints _sceneCompositeHints;
     private bool _sceneCompositePending;
     private bool _sceneCompositeFlushing;
@@ -226,22 +233,17 @@ internal class DXRenderer : IDisposable
         RenderContext.Dispose();
     }
 
-    internal unsafe void BeginFrame()
+    internal unsafe void BeginFrame(FrameState? frameState = null)
     {
         RenderContext.BeginFrame();
 
-        var device = Device.Instance();
-        ViewportSize = new(device->Width, device->Height);
-        ViewProj = *(SharpDX.Matrix*)&Control.Instance()->ViewProjectionMatrix;
+        var state = frameState ?? CaptureFrameState();
+        ViewportSize = state.ViewportSize;
+        ViewProj = state.ViewProj;
+        ProjScale = state.ProjScale;
+        CameraPos = state.CameraPos;
 
-        var sceneCamera = Control.Instance()->CameraManager.GetActiveCamera();
-        var renderCam = sceneCamera != null ? sceneCamera->SceneCamera.RenderCamera : null;
-        if (renderCam != null)
-        {
-            var proj = renderCam->ProjectionMatrix;
-            ProjScale = new Vector2(proj.M11, proj.M22);
-            CameraPos = renderCam->Origin;
-        }
+        var device = Device.Instance();
 
         var rtm = FFXIVClientStructs.FFXIV.Client.Graphics.Render.RenderTargetManager.Instance();
         if (rtm != null && rtm->DepthStencil != null)
@@ -276,6 +278,31 @@ internal class DXRenderer : IDisposable
             RenderTarget = new(RenderContext, (int)ViewportSize.X, (int)ViewportSize.Y, PctService.Hints.AlphaBlendMode);
         }
         RenderTarget.Bind(RenderContext);
+    }
+
+    internal FrameState CaptureFrameState()
+    {
+        unsafe
+        {
+            var device = Device.Instance();
+            var viewportSize = device != null
+                ? new SharpDX.Vector2(device->Width, device->Height)
+                : ViewportSize;
+            var viewProj = *(SharpDX.Matrix*)&Control.Instance()->ViewProjectionMatrix;
+            var projScale = ProjScale;
+            var cameraPos = CameraPos;
+
+            var sceneCamera = Control.Instance()->CameraManager.GetActiveCamera();
+            var renderCam = sceneCamera != null ? sceneCamera->SceneCamera.RenderCamera : null;
+            if (renderCam != null)
+            {
+                var proj = renderCam->ProjectionMatrix;
+                projScale = new Vector2(proj.M11, proj.M22);
+                cameraPos = renderCam->Origin;
+            }
+
+            return new FrameState(viewProj, viewportSize, projScale, cameraPos);
+        }
     }
 
     internal unsafe RenderTarget EndFrame(ShaderResourceView? sceneDepthSRV, SharpDX.Vector2 sceneDepthUvScale, ShaderResourceView? sceneInfoSRV, ShaderResourceView? sceneNormalSRV, bool compositeToBackBuffer = false)
@@ -422,7 +449,7 @@ internal class DXRenderer : IDisposable
         return RenderTarget;
     }
 
-    internal void ScheduleSceneComposite(SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, PctDrawHints hints)
+    internal void ScheduleSceneComposite(SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, FrameState frameState, PctDrawHints hints)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _sceneCompositeScheduleCount++;
@@ -435,6 +462,7 @@ internal class DXRenderer : IDisposable
         _sceneCompositeDepth = sceneDepth;
         _sceneCompositeInfo = sceneInfo;
         _sceneCompositeNormal = sceneNormal;
+        _sceneCompositeFrameState = frameState;
         _sceneCompositeHints = hints with { AutoDraw = AutoDraw.SceneComposite, UIMask = UIMask.None };
         _sceneCompositePending = true;
 
@@ -455,6 +483,7 @@ internal class DXRenderer : IDisposable
         _sceneCompositeDepth = null;
         _sceneCompositeInfo = null;
         _sceneCompositeNormal = null;
+        _sceneCompositeFrameState = null;
         _sceneCompositeStallLogged = false;
     }
 
@@ -473,7 +502,7 @@ internal class DXRenderer : IDisposable
         PctService.Hints = _sceneCompositeHints;
         try
         {
-            BeginFrame();
+            BeginFrame(_sceneCompositeFrameState);
             _sceneCompositeDepth.Update();
             _sceneCompositeInfo.Update();
             _sceneCompositeNormal.Update();
@@ -497,6 +526,7 @@ internal class DXRenderer : IDisposable
             _sceneCompositeDepth = null;
             _sceneCompositeInfo = null;
             _sceneCompositeNormal = null;
+            _sceneCompositeFrameState = null;
             _sceneCompositeFlushing = false;
         }
     }
