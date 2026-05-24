@@ -9,6 +9,7 @@ namespace Pictomancy.DXDraw;
 internal class DXRenderer : IDisposable
 {
     private const long SceneCompositeStallWarningMilliseconds = 2000;
+    private const long SceneCompositeDsvlessFallbackMilliseconds = 100;
 
     internal readonly record struct FrameState(
         SharpDX.Matrix ViewProj,
@@ -173,7 +174,11 @@ internal class DXRenderer : IDisposable
 
         try
         {
-            UIMaskCapture = new UIMaskCapture(RenderContext, PctService.HookProvider, FlushSceneCompositeFromHook);
+            UIMaskCapture = new UIMaskCapture(
+                RenderContext,
+                PctService.HookProvider,
+                FlushSceneCompositeFromHook,
+                ShouldFlushSceneCompositeOnDsvlessBackbufferBind);
         }
         catch (Exception e)
         {
@@ -531,6 +536,15 @@ internal class DXRenderer : IDisposable
         }
     }
 
+    private bool ShouldFlushSceneCompositeOnDsvlessBackbufferBind()
+    {
+        if (!_sceneCompositePending || _sceneCompositeFlushing || _sceneCompositeScheduledUnixMs <= 0)
+            return false;
+
+        var age = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _sceneCompositeScheduledUnixMs;
+        return age >= SceneCompositeDsvlessFallbackMilliseconds;
+    }
+
     private void MaybeLogSceneCompositeStall()
     {
         if (!_sceneCompositePending || _sceneCompositeStallLogged || _sceneCompositeScheduledUnixMs <= 0)
@@ -555,10 +569,13 @@ internal class DXRenderer : IDisposable
         var lastHook = UIMaskCapture.LastHookUnixMs > 0
             ? $"{Math.Max(0, now - UIMaskCapture.LastHookUnixMs)} ms ago"
             : "never";
-        var lastBind = UIMaskCapture.LastBackbufferDsvBindUnixMs > 0
+        var lastBackbufferBind = UIMaskCapture.LastBackbufferBindUnixMs > 0
+            ? $"{Math.Max(0, now - UIMaskCapture.LastBackbufferBindUnixMs)} ms ago"
+            : "never";
+        var lastDsvBind = UIMaskCapture.LastBackbufferDsvBindUnixMs > 0
             ? $"{Math.Max(0, now - UIMaskCapture.LastBackbufferDsvBindUnixMs)} ms ago"
             : "never";
-        return $"hook installed; OMSetRenderTargets calls {UIMaskCapture.HookCallCount}; backbuffer DSV binds {UIMaskCapture.BackbufferDsvBindCount}; last hook {lastHook}; last backbuffer bind {lastBind}";
+        return $"hook installed; OMSetRenderTargets calls {UIMaskCapture.HookCallCount}; backbuffer binds {UIMaskCapture.BackbufferBindCount}; backbuffer DSV binds {UIMaskCapture.BackbufferDsvBindCount}; relaxed scene flushes {UIMaskCapture.DsvlessBackbufferCallbackCount}; last hook {lastHook}; last backbuffer bind {lastBackbufferBind}; last DSV bind {lastDsvBind}";
     }
     public void DrawText(Vector2 position, string text)
     {

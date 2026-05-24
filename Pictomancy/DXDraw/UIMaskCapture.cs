@@ -19,6 +19,7 @@ internal unsafe class UIMaskCapture : IDisposable
     private readonly RenderContext _ctx;
     private readonly Hook<OMSetRenderTargetsDelegate>? _hook;
     private readonly Action? _afterBackbufferDsvBind;
+    private readonly Func<bool>? _allowDsvlessBackbufferCallback;
 
     private readonly VertexShader _vs;
     private readonly PixelShader  _ps;
@@ -34,16 +35,22 @@ internal unsafe class UIMaskCapture : IDisposable
     private Texture2D? _bbCopy;
     private ShaderResourceView? _bbCopySRV;
     private long _hookCallCount;
+    private long _backbufferBindCount;
     private long _backbufferDsvBindCount;
+    private long _dsvlessBackbufferCallbackCount;
     private long _lastHookUnixMs;
+    private long _lastBackbufferBindUnixMs;
     private long _lastBackbufferDsvBindUnixMs;
 
     public ShaderResourceView? MaskSRV => _maskSRV;
     public bool HasSnapshot => _snapshot != null;
     public bool IsHookInstalled => _hook != null;
     public long HookCallCount => Interlocked.Read(ref _hookCallCount);
+    public long BackbufferBindCount => Interlocked.Read(ref _backbufferBindCount);
     public long BackbufferDsvBindCount => Interlocked.Read(ref _backbufferDsvBindCount);
+    public long DsvlessBackbufferCallbackCount => Interlocked.Read(ref _dsvlessBackbufferCallbackCount);
     public long LastHookUnixMs => Interlocked.Read(ref _lastHookUnixMs);
+    public long LastBackbufferBindUnixMs => Interlocked.Read(ref _lastBackbufferBindUnixMs);
     public long LastBackbufferDsvBindUnixMs => Interlocked.Read(ref _lastBackbufferDsvBindUnixMs);
 
     // Used to snapshot once at the first DSV-backed swapchain backbuffer bind for the frame.
@@ -63,10 +70,15 @@ internal unsafe class UIMaskCapture : IDisposable
         public float StrongRgbThreshold;
     }
 
-    public UIMaskCapture(RenderContext ctx, IGameInteropProvider hookProvider, Action? afterBackbufferDsvBind = null)
+    public UIMaskCapture(
+        RenderContext ctx,
+        IGameInteropProvider hookProvider,
+        Action? afterBackbufferDsvBind = null,
+        Func<bool>? allowDsvlessBackbufferCallback = null)
     {
         _ctx = ctx;
         _afterBackbufferDsvBind = afterBackbufferDsvBind;
+        _allowDsvlessBackbufferCallback = allowDsvlessBackbufferCallback;
 
         const string shaderSource = """
             Texture2D    backBuffer     : register(t0);
@@ -183,27 +195,51 @@ internal unsafe class UIMaskCapture : IDisposable
         Interlocked.Increment(ref _hookCallCount);
         Interlocked.Exchange(ref _lastHookUnixMs, now);
 
+        nint matchedBackbufferResource = nint.Zero;
+        bool isBackbufferBind = false;
         bool isBackbufferDsvBind = false;
+        bool useDsvlessBackbufferCallback = false;
         try
         {
-            isBackbufferDsvBind = MaybeCapturePreBind(numViews, rtvs, dsv);
-            if (isBackbufferDsvBind)
+            isBackbufferBind = TryGetSwapChainBackBufferResource(numViews, rtvs, out matchedBackbufferResource);
+            if (isBackbufferBind)
             {
-                Interlocked.Increment(ref _backbufferDsvBindCount);
-                Interlocked.Exchange(ref _lastBackbufferDsvBindUnixMs, now);
+                Interlocked.Increment(ref _backbufferBindCount);
+                Interlocked.Exchange(ref _lastBackbufferBindUnixMs, now);
+
+                if (IsResolutionScaled() || dsv != nint.Zero)
+                {
+                    if (!_capturedThisFrame)
+                        CapturePreBindSnapshot(matchedBackbufferResource);
+
+                    isBackbufferDsvBind = true;
+                    Interlocked.Increment(ref _backbufferDsvBindCount);
+                    Interlocked.Exchange(ref _lastBackbufferDsvBindUnixMs, now);
+                }
+                else if (_allowDsvlessBackbufferCallback?.Invoke() == true)
+                {
+                    useDsvlessBackbufferCallback = true;
+                }
             }
         }
         catch (Exception e)
         {
             PctService.Log.Error(e, "[Pictomancy] UIMaskCapture: pre-bind capture failed");
         }
+        finally
+        {
+            ReleaseCom(matchedBackbufferResource);
+        }
 
         _hook!.Original(deviceContext, numViews, rtvs, dsv);
 
-        if (isBackbufferDsvBind)
+        if (isBackbufferDsvBind || useDsvlessBackbufferCallback)
         {
             try
             {
+                if (useDsvlessBackbufferCallback)
+                    Interlocked.Increment(ref _dsvlessBackbufferCallbackCount);
+
                 _afterBackbufferDsvBind?.Invoke();
             }
             catch (Exception e)
@@ -257,8 +293,9 @@ internal unsafe class UIMaskCapture : IDisposable
         return false;
     }
 
-    private unsafe bool MaybeCapturePreBind(uint numViews, nint* rtvs, nint dsv)
+    private unsafe bool TryGetSwapChainBackBufferResource(uint numViews, nint* rtvs, out nint matchedResource)
     {
+        matchedResource = nint.Zero;
         if (numViews == 0) return false;
 
         var device = Device.Instance();
@@ -270,20 +307,8 @@ internal unsafe class UIMaskCapture : IDisposable
             return false;
         }
 
-        var rtm = FFXIVClientStructs.FFXIV.Client.Graphics.Render.RenderTargetManager.Instance();
-        bool isResolutionScaled = false;
-        if (rtm != null && rtm->DepthStencil != null)
-        {
-            isResolutionScaled = rtm->DepthStencil->ActualWidth != device->Width || rtm->DepthStencil->ActualHeight != device->Height;
-        }
-
-        if (!isResolutionScaled && dsv == nint.Zero) return false;
-
         nint targetD3D11 = (nint)device->SwapChain->BackBuffer->D3D11Texture2D;
         if (targetD3D11 == nint.Zero) return false;
-
-        bool deviceBackBufferBound = false;
-        nint capturedResource = nint.Zero;
 
         for (uint i = 0; i < numViews; i++)
         {
@@ -296,32 +321,59 @@ internal unsafe class UIMaskCapture : IDisposable
 
             if (resource != nint.Zero)
             {
-                bool isTarget = IsMatch(resource, targetD3D11);
-                
-                nint resVtable = *(nint*)resource;
-                var release = (delegate* unmanaged[Stdcall]<nint, uint>)*(nint*)(resVtable + 2 * sizeof(nint));
-                release(resource);
+                bool isTarget;
+                try
+                {
+                    isTarget = IsMatch(resource, targetD3D11);
+                }
+                catch
+                {
+                    ReleaseCom(resource);
+                    throw;
+                }
 
                 if (isTarget)
                 {
-                    deviceBackBufferBound = true;
-                    capturedResource = resource;
-                    break;
+                    matchedResource = resource;
+                    return true;
                 }
+
+                ReleaseCom(resource);
             }
         }
 
-        if (!deviceBackBufferBound) return false;
-        if (_capturedThisFrame) return true;
+        return false;
+    }
 
-        EnsureSnapshot(capturedResource);
+    private unsafe static bool IsResolutionScaled()
+    {
+        var device = Device.Instance();
+        var rtm = FFXIVClientStructs.FFXIV.Client.Graphics.Render.RenderTargetManager.Instance();
+        return device != null
+            && rtm != null
+            && rtm->DepthStencil != null
+            && (rtm->DepthStencil->ActualWidth != device->Width || rtm->DepthStencil->ActualHeight != device->Height);
+    }
 
-        var src = new Texture2D(capturedResource);
+    private void CapturePreBindSnapshot(nint backbufferResource)
+    {
+        EnsureSnapshot(backbufferResource);
+
+        var src = new Texture2D(backbufferResource);
         _ctx.Device.ImmediateContext.CopyResource(src, _snapshot);
         GC.SuppressFinalize(src);
 
         _capturedThisFrame = true;
-        return true;
+    }
+
+    private unsafe static void ReleaseCom(nint resource)
+    {
+        if (resource == nint.Zero)
+            return;
+
+        nint vtable = *(nint*)resource;
+        var release = (delegate* unmanaged[Stdcall]<nint, uint>)*(nint*)(vtable + 2 * sizeof(nint));
+        release(resource);
     }
 
     private void EnsureSnapshot(nint deviceBackBufferD3D11)
