@@ -8,6 +8,7 @@ using KamiToolKit;
 using KamiToolKit.Overlay.UiOverlay;
 using Pictomancy.DXDraw;
 using Pictomancy.VfxDraw;
+using System.Runtime.Versioning;
 
 namespace Pictomancy;
 
@@ -42,6 +43,10 @@ public class PctService
     public static bool IsSceneCompositeHookUnavailable => _dxRenderer?.IsSceneCompositeHookUnavailable ?? true;
     public static bool IsSceneCompositeStalled(TimeSpan maxPendingAge) => _dxRenderer?.IsSceneCompositeStalled(maxPendingAge) == true;
     public static void CancelSceneComposite(string reason) => _dxRenderer?.CancelSceneComposite(reason);
+
+    /// <summary>Hide the native overlay node without rendering another frame.</summary>
+    [SupportedOSPlatform("windows7.0")]
+    public static void HideNativeOverlay() => _overlayNode?.IsVisible = false;
 
     /// <summary>
     /// Initialize Pictomancy. Returns a disposable handle; hold it for your plugin's lifetime and dispose it on plugin shutdown.
