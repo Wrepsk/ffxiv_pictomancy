@@ -208,6 +208,8 @@ internal class Sprite : IDisposable
         });
     }
 
+    public void Discard() => _sprites.Clear();
+
     public void Flush(Vector3 cameraPos)
     {
         if (_sprites.Count == 0) return;

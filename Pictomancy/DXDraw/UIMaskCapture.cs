@@ -249,49 +249,8 @@ internal unsafe class UIMaskCapture : IDisposable
         }
     }
 
-    private unsafe bool IsMatch(nint resource, nint targetD3D11)
-    {
-        if (resource == targetD3D11) return true;
-
-        Guid iid = new Guid("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
-        nint resVtable = *(nint*)resource;
-        var queryInterface = (delegate* unmanaged[Stdcall]<nint, Guid*, out nint, int>)*(nint*)(resVtable + 0);
-        
-        if (queryInterface(resource, &iid, out nint resTex) == 0)
-        {
-            nint texVtable = *(nint*)resTex;
-            var getDesc = (delegate* unmanaged[Stdcall]<nint, out Texture2DDescription, void>)*(nint*)(texVtable + 10 * sizeof(nint));
-            
-            Texture2DDescription resDesc;
-            getDesc(resTex, out resDesc);
-            
-            var releaseTex = (delegate* unmanaged[Stdcall]<nint, uint>)*(nint*)(texVtable + 2 * sizeof(nint));
-            releaseTex(resTex);
-
-            nint targetVtable = *(nint*)targetD3D11;
-            var queryTarget = (delegate* unmanaged[Stdcall]<nint, Guid*, out nint, int>)*(nint*)(targetVtable + 0);
-            
-            if (queryTarget(targetD3D11, &iid, out nint targetTex) == 0)
-            {
-                nint tgtTexVtable = *(nint*)targetTex;
-                var getTargetDesc = (delegate* unmanaged[Stdcall]<nint, out Texture2DDescription, void>)*(nint*)(tgtTexVtable + 10 * sizeof(nint));
-                
-                Texture2DDescription tgtDesc;
-                getTargetDesc(targetTex, out tgtDesc);
-                
-                var releaseTgtTex = (delegate* unmanaged[Stdcall]<nint, uint>)*(nint*)(tgtTexVtable + 2 * sizeof(nint));
-                releaseTgtTex(targetTex);
-
-                if (resDesc.Width == tgtDesc.Width &&
-                    resDesc.Height == tgtDesc.Height &&
-                    resDesc.Format == tgtDesc.Format)
-                {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
+    private static bool IsMatch(nint resource, nint targetD3D11)
+        => ComResourceIdentity.AreSame(resource, targetD3D11);
 
     private unsafe bool TryGetSwapChainBackBufferResource(uint numViews, nint* rtvs, out nint matchedResource)
     {

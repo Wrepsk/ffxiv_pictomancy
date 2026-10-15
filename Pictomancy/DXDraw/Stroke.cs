@@ -353,6 +353,12 @@ internal class Stroke : IDisposable
         _data.DrawAll(_ctx);
     }
 
+    public void Discard()
+    {
+        _builder?.Dispose();
+        _builder = null;
+    }
+
     private void Bind()
     {
         _ctx.Context.InputAssembler.PrimitiveTopology = PrimitiveTopology.LineStripWithAdjacency;

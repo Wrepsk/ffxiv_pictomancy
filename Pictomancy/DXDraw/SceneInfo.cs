@@ -36,7 +36,7 @@ internal class SceneInfo : IDisposable
     internal unsafe void Update()
     {
         var rtm = RenderTargetManager.Instance();
-        if (rtm == null) return;
+        if (rtm == null) { DropSrv(); return; }
 
         
         var sceneTexPtr = rtm->GBuffers[3].Value;

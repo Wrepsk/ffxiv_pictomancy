@@ -35,7 +35,7 @@ internal class SceneNormal : IDisposable
     internal unsafe void Update()
     {
         var rtm = RenderTargetManager.Instance();
-        if (rtm == null) return;
+        if (rtm == null) { DropSrv(); return; }
 
         var normalTexPtr = rtm->GBuffers[0].Value;
         if (normalTexPtr == null || normalTexPtr->D3D11ShaderResourceView == null)

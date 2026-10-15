@@ -12,16 +12,31 @@ internal class SceneDepth : IDisposable
 
     private IntPtr _cachedTexPtr;
     private ShaderResourceView? _srv;
+    private string? _unavailableReason;
 
     internal ShaderResourceView? SRV => _srv;
     public SharpDX.Vector2 UvScale { get; private set; } = new(1, 1);
 
     public void Dispose()
     {
+        DropSrv();
+        RenderContext.Dispose();
+    }
+
+    private void DropSrv()
+    {
         _srv?.Dispose();
         _srv = null;
         _cachedTexPtr = IntPtr.Zero;
-        RenderContext.Dispose();
+        UvScale = new(1, 1);
+    }
+
+    private void SetUnavailable(string reason)
+    {
+        DropSrv();
+        if (_unavailableReason != reason)
+            PctService.Log.Warning($"[Pictomancy] SceneDepth.Update: {reason}; skipping world screens.");
+        _unavailableReason = reason;
     }
 
     internal unsafe void Update()
@@ -30,27 +45,39 @@ internal class SceneDepth : IDisposable
         var depthStencil = rtm != null ? rtm->DepthStencil : null;
         if (depthStencil == null || depthStencil->D3D11Texture2D == null)
         {
-            PctService.Log.Warning("[Pictomancy] SceneDepth.Update: scene depth source unavailable.");
+            SetUnavailable("scene depth source unavailable");
             return;
         }
 
         var texPtr = (IntPtr)depthStencil->D3D11Texture2D;
         if (texPtr != _cachedTexPtr)
         {
-            _srv?.Dispose();
-            _cachedTexPtr = texPtr;
-
-            var tex = new Texture2D(texPtr);
+            using var tex = new Texture2D(texPtr);
             try
             {
+                var description = tex.Description;
+                if (!ScreenDepthPolicy.TryGetShaderFormat(description.Format, description.SampleDescription.Count, out var shaderFormat))
+                {
+                    SetUnavailable($"unsupported depth format {description.Format} / {description.SampleDescription.Count} samples");
+                    return;
+                }
                 var srvDesc = new ShaderResourceViewDescription
                 {
-                    Format = Format.R24_UNorm_X8_Typeless,
+                    Format = shaderFormat,
                     Dimension = ShaderResourceViewDimension.Texture2D,
                 };
                 srvDesc.Texture2D.MostDetailedMip = 0;
                 srvDesc.Texture2D.MipLevels = 1;
-                _srv = new ShaderResourceView(RenderContext.Device, tex, srvDesc);
+                var nextSrv = new ShaderResourceView(RenderContext.Device, tex, srvDesc);
+                DropSrv();
+                _srv = nextSrv;
+                _cachedTexPtr = texPtr;
+                _unavailableReason = null;
+            }
+            catch
+            {
+                DropSrv();
+                throw;
             }
             finally
             {

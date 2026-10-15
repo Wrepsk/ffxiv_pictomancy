@@ -18,6 +18,7 @@ internal class DXRenderer : IDisposable
         Vector3 CameraPos);
 
     public RenderContext RenderContext { get; init; } = new();
+    internal RenderFailureMailbox RenderFailures { get; } = new();
     internal RenderTarget? RenderTarget { get; private set; }
     public TriFill TriFill { get; init; }
     public FanFill? FanFill { get; init; }
@@ -36,10 +37,10 @@ internal class DXRenderer : IDisposable
     private SceneDepth? _sceneCompositeDepth;
     private SceneInfo? _sceneCompositeInfo;
     private SceneNormal? _sceneCompositeNormal;
-    private FrameState? _sceneCompositeFrameState;
     private PctDrawHints _sceneCompositeHints;
-    private bool _sceneCompositePending;
-    private bool _sceneCompositeFlushing;
+    private readonly object _sceneCompositeGate = new();
+    private volatile bool _sceneCompositePending;
+    private volatile bool _sceneCompositeFlushing;
     private long _sceneCompositeScheduledUnixMs;
     private long _lastSceneCompositeFlushUnixMs;
     private long _sceneCompositeScheduleCount;
@@ -52,7 +53,7 @@ internal class DXRenderer : IDisposable
         get
         {
             MaybeLogSceneCompositeStall();
-            return _sceneCompositePending;
+            return _sceneCompositePending || _sceneCompositeFlushing;
         }
     }
 
@@ -107,135 +108,147 @@ internal class DXRenderer : IDisposable
     {
         try
         {
-            // uncomment to test linux fanfill fallback renderer
-            //throw new Exception("test exception please ignore");
-            FanFill = new(RenderContext, options.MaxFans);
-        }
-        catch (Exception e)
-        {
-            PctService.Log.Error("[Pictomancy] Failed to compile fan shader; starting in degraded mode.");
-        }
-        try
-        {
-            ProjectedFanFill = new(RenderContext, options.MaxFans);
-        }
-        catch (Exception e)
-        {
-            PctService.Log.Error(e, "[Pictomancy] Failed to compile projected fan shader; projection-mode fans will fall back to flat draw.");
-        }
-        try
-        {
-            ProjectedTriFill = new(RenderContext, Math.Max(1, options.MaxTriangleVertices / 3));
-        }
-        catch (Exception e)
-        {
-            PctService.Log.Error(e, "[Pictomancy] Failed to compile projected triangle shader; projection-mode triangles will fall back to flat draw.");
-        }
-        try
-        {
-            // uncomment to test linux imgui fallback renderer
-            //throw new Exception("test exception please ignore");
-            Stroke = new(RenderContext, options.MaxStrokeSegments);
-        }
-        catch (Exception e)
-        {
-            PctService.Log.Error(e, "[Pictomancy] Failed to compile stroke shader; starting in degraded mode.");
-        }
-        try
-        {
-            Sphere = new(RenderContext, options.MaxSpheres);
-        }
-        catch (Exception e)
-        {
-            PctService.Log.Error(e, "[Pictomancy] Failed to compile sphere shader; sphere draws will be skipped.");
-        }
-        try
-        {
-            Image = new(RenderContext, options.MaxImages);
-        }
-        catch (Exception e)
-        {
-            PctService.Log.Error(e, "[Pictomancy] Failed to compile image shader; image draws will be skipped.");
-        }
-        try
-        {
-            Sprite = new(RenderContext, options.MaxSprites);
-        }
-        catch (Exception e)
-        {
-            PctService.Log.Error(e, "[Pictomancy] Failed to compile sprite shader; sprite draws will be skipped.");
-        }
+            try
+            {
+                // uncomment to test linux fanfill fallback renderer
+                //throw new Exception("test exception please ignore");
+                FanFill = new(RenderContext, options.MaxFans);
+            }
+            catch (Exception e)
+            {
+                PctService.Log.Error("[Pictomancy] Failed to compile fan shader; starting in degraded mode.");
+            }
+            try
+            {
+                ProjectedFanFill = new(RenderContext, options.MaxFans);
+            }
+            catch (Exception e)
+            {
+                PctService.Log.Error(e, "[Pictomancy] Failed to compile projected fan shader; projection-mode fans will fall back to flat draw.");
+            }
+            try
+            {
+                ProjectedTriFill = new(RenderContext, Math.Max(1, options.MaxTriangleVertices / 3));
+            }
+            catch (Exception e)
+            {
+                PctService.Log.Error(e, "[Pictomancy] Failed to compile projected triangle shader; projection-mode triangles will fall back to flat draw.");
+            }
+            try
+            {
+                // uncomment to test linux imgui fallback renderer
+                //throw new Exception("test exception please ignore");
+                Stroke = new(RenderContext, options.MaxStrokeSegments);
+            }
+            catch (Exception e)
+            {
+                PctService.Log.Error(e, "[Pictomancy] Failed to compile stroke shader; starting in degraded mode.");
+            }
+            try
+            {
+                Sphere = new(RenderContext, options.MaxSpheres);
+            }
+            catch (Exception e)
+            {
+                PctService.Log.Error(e, "[Pictomancy] Failed to compile sphere shader; sphere draws will be skipped.");
+            }
+            try
+            {
+                Image = new(RenderContext, options.MaxImages);
+            }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException("[Pictomancy] Image renderer initialization failed.", e);
+            }
+            try
+            {
+                Sprite = new(RenderContext, options.MaxSprites);
+            }
+            catch (Exception e)
+            {
+                PctService.Log.Error(e, "[Pictomancy] Failed to compile sprite shader; sprite draws will be skipped.");
+            }
 
-        // TriFill's buffer doubles as the fan-fallback path's storage in degraded mode.
-        TriFill = new(RenderContext, options.MaxTriangleVertices + (FanDegraded ? options.MaxFans * 360 : 0));
+            // TriFill's buffer doubles as the fan-fallback path's storage in degraded mode.
+            TriFill = new(RenderContext, options.MaxTriangleVertices + (FanDegraded ? options.MaxFans * 360 : 0));
 
-        FSP = new(RenderContext);
-        ClipZone = new(RenderContext, options.MaxClipZones);
+            FSP = new(RenderContext);
+            ClipZone = new(RenderContext, options.MaxClipZones);
 
-        try
-        {
-            UIMaskCapture = new UIMaskCapture(
-                RenderContext,
-                PctService.HookProvider,
-                FlushSceneCompositeFromHook,
-                ShouldFlushSceneCompositeOnDsvlessBackbufferBind);
+            try
+            {
+                UIMaskCapture = new UIMaskCapture(
+                    RenderContext,
+                    PctService.HookProvider,
+                    FlushSceneCompositeFromHook,
+                    ShouldFlushSceneCompositeOnDsvlessBackbufferBind);
+            }
+            catch (Exception e)
+            {
+                PctService.Log.Error(e, "[Pictomancy] Failed to create UIMaskCapture; UIMask.BackbufferSubtraction will fall back to backbuffer alpha.");
+            }
+
+            var clipZoneDesc = DepthStencilStateDescription.Default();
+            clipZoneDesc.IsDepthEnabled = false;
+            clipZoneDesc.DepthWriteMask = DepthWriteMask.Zero;
+            clipZoneDesc.IsStencilEnabled = true;
+            clipZoneDesc.StencilReadMask = 0xFF;
+            clipZoneDesc.StencilWriteMask = 0xFF;
+            clipZoneDesc.FrontFace = new DepthStencilOperationDescription
+            {
+                FailOperation = StencilOperation.Keep,
+                DepthFailOperation = StencilOperation.Keep,
+                PassOperation = StencilOperation.Replace,
+                Comparison = Comparison.Always,
+            };
+            clipZoneDesc.BackFace = clipZoneDesc.FrontFace;
+            _clipZoneDSS = new(RenderContext.Device, clipZoneDesc);
+
+            // Shape pass: no depth test (PS handles occlusion), stencil-equal-zero to skip clip zones.
+            var shapeDesc = DepthStencilStateDescription.Default();
+            shapeDesc.IsDepthEnabled = false;
+            shapeDesc.DepthWriteMask = DepthWriteMask.Zero;
+            shapeDesc.IsStencilEnabled = true;
+            shapeDesc.StencilReadMask = 0xFF;
+            shapeDesc.StencilWriteMask = 0;
+            shapeDesc.FrontFace = new DepthStencilOperationDescription
+            {
+                FailOperation = StencilOperation.Keep,
+                DepthFailOperation = StencilOperation.Keep,
+                PassOperation = StencilOperation.Keep,
+                Comparison = Comparison.Equal,
+            };
+            shapeDesc.BackFace = shapeDesc.FrontFace;
+            _shapeDSS = new(RenderContext.Device, shapeDesc);
         }
-        catch (Exception e)
+        catch
         {
-            PctService.Log.Error(e, "[Pictomancy] Failed to create UIMaskCapture; UIMask.BackbufferSubtraction will fall back to backbuffer alpha.");
+            Dispose();
+            throw;
         }
-
-        var clipZoneDesc = DepthStencilStateDescription.Default();
-        clipZoneDesc.IsDepthEnabled = false;
-        clipZoneDesc.DepthWriteMask = DepthWriteMask.Zero;
-        clipZoneDesc.IsStencilEnabled = true;
-        clipZoneDesc.StencilReadMask = 0xFF;
-        clipZoneDesc.StencilWriteMask = 0xFF;
-        clipZoneDesc.FrontFace = new DepthStencilOperationDescription
-        {
-            FailOperation = StencilOperation.Keep,
-            DepthFailOperation = StencilOperation.Keep,
-            PassOperation = StencilOperation.Replace,
-            Comparison = Comparison.Always,
-        };
-        clipZoneDesc.BackFace = clipZoneDesc.FrontFace;
-        _clipZoneDSS = new(RenderContext.Device, clipZoneDesc);
-
-        // Shape pass: no depth test (PS handles occlusion), stencil-equal-zero to skip clip zones.
-        var shapeDesc = DepthStencilStateDescription.Default();
-        shapeDesc.IsDepthEnabled = false;
-        shapeDesc.DepthWriteMask = DepthWriteMask.Zero;
-        shapeDesc.IsStencilEnabled = true;
-        shapeDesc.StencilReadMask = 0xFF;
-        shapeDesc.StencilWriteMask = 0;
-        shapeDesc.FrontFace = new DepthStencilOperationDescription
-        {
-            FailOperation = StencilOperation.Keep,
-            DepthFailOperation = StencilOperation.Keep,
-            PassOperation = StencilOperation.Keep,
-            Comparison = Comparison.Equal,
-        };
-        shapeDesc.BackFace = shapeDesc.FrontFace;
-        _shapeDSS = new(RenderContext.Device, shapeDesc);
     }
 
     public void Dispose()
     {
-        RenderTarget?.Dispose();
-        TriFill.Dispose();
-        FanFill?.Dispose();
-        ProjectedFanFill?.Dispose();
-        ProjectedTriFill?.Dispose();
-        Stroke?.Dispose();
-        Sphere?.Dispose();
-        Image?.Dispose();
-        Sprite?.Dispose();
-        ClipZone.Dispose();
-        FSP.Dispose();
+        // Disable the detour before taking the gate; let any active callback finish.
         UIMaskCapture?.Dispose();
-        _clipZoneDSS.Dispose();
-        _shapeDSS.Dispose();
-        RenderContext.Dispose();
+        lock (_sceneCompositeGate)
+        {
+            RenderTarget?.Dispose();
+            TriFill?.Dispose();
+            FanFill?.Dispose();
+            ProjectedFanFill?.Dispose();
+            ProjectedTriFill?.Dispose();
+            Stroke?.Dispose();
+            Sphere?.Dispose();
+            Image?.Dispose();
+            Sprite?.Dispose();
+            ClipZone?.Dispose();
+            FSP?.Dispose();
+            _clipZoneDSS?.Dispose();
+            _shapeDSS?.Dispose();
+            RenderContext.Dispose();
+        }
     }
 
     internal unsafe void BeginFrame(FrameState? frameState = null)
@@ -313,6 +326,12 @@ internal class DXRenderer : IDisposable
     internal unsafe RenderTarget EndFrame(ShaderResourceView? sceneDepthSRV, SharpDX.Vector2 sceneDepthUvScale, ShaderResourceView? sceneInfoSRV, ShaderResourceView? sceneNormalSRV, bool compositeToBackBuffer = false)
     {
         var rtSize = new Vector2(ViewportSize.X, ViewportSize.Y);
+        if (sceneDepthSRV == null)
+        {
+            // Do not draw through geometry using stale depth or reuse last frame's overlay.
+            DiscardPendingDraws();
+            RenderTarget!.Bind(RenderContext);
+        }
         var pixelToUv = new Vector2(sceneDepthUvScale.X, sceneDepthUvScale.Y) / rtSize;
         TriFill.UpdateConstants(new() { ViewProj = ViewProj, PixelToUv = pixelToUv });
         FanFill?.UpdateConstants(new() { ViewProj = ViewProj, PixelToUv = pixelToUv });
@@ -385,7 +404,7 @@ internal class DXRenderer : IDisposable
         {
             // DSV-only target with cleared stencil for the clip-zone pass.
             RenderContext.Context.OutputMerger.SetTargets(RenderTarget!.ClipStencilDSV);
-            RenderContext.Context.ClearDepthStencilView(RenderTarget.ClipStencilDSV, DepthStencilClearFlags.Stencil, 0f, 0);
+            RenderContext.Context.ClearDepthStencilView(RenderTarget.ClipStencilDSV, DepthStencilClearFlags.Depth | DepthStencilClearFlags.Stencil, 0f, 0);
 
             if (ClipZone.HasPending)
             {
@@ -407,7 +426,7 @@ internal class DXRenderer : IDisposable
         TriFill.Flush();
         FanFill?.Flush();
         Sphere?.Flush();
-        Image?.FlushFlat(CameraPos);
+        Image?.FlushFlat(CameraPos, _shapeDSS);
         Sprite?.Flush(CameraPos);
         Stroke?.Flush();
 
@@ -454,85 +473,109 @@ internal class DXRenderer : IDisposable
         return RenderTarget;
     }
 
-    internal void ScheduleSceneComposite(SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, FrameState frameState, PctDrawHints hints)
+    internal void ScheduleSceneComposite(SceneDepth sceneDepth, SceneInfo sceneInfo, SceneNormal sceneNormal, PctDrawHints hints)
     {
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        _sceneCompositeScheduleCount++;
-        if (!_sceneCompositePending)
+        lock (_sceneCompositeGate)
         {
-            _sceneCompositeScheduledUnixMs = now;
-            _sceneCompositeStallLogged = false;
-        }
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _sceneCompositeScheduleCount++;
+            if (!_sceneCompositePending)
+            {
+                _sceneCompositeScheduledUnixMs = now;
+                _sceneCompositeStallLogged = false;
+            }
 
-        _sceneCompositeDepth = sceneDepth;
-        _sceneCompositeInfo = sceneInfo;
-        _sceneCompositeNormal = sceneNormal;
-        _sceneCompositeFrameState = frameState;
-        _sceneCompositeHints = hints with { AutoDraw = AutoDraw.SceneComposite, UIMask = UIMask.None };
-        _sceneCompositePending = true;
+            _sceneCompositeDepth = sceneDepth;
+            _sceneCompositeInfo = sceneInfo;
+            _sceneCompositeNormal = sceneNormal;
+            _sceneCompositeHints = hints with { AutoDraw = AutoDraw.SceneComposite, UIMask = UIMask.None };
+            _sceneCompositePending = true;
 
-        if (IsSceneCompositeHookUnavailable && !_sceneCompositeHookUnavailableLogged)
-        {
-            _sceneCompositeHookUnavailableLogged = true;
-            PctService.Log.Warning($"[Pictomancy] SceneComposite cannot flush because the OMSetRenderTargets hook is unavailable. {SceneCompositeStatus}");
+            if (IsSceneCompositeHookUnavailable && !_sceneCompositeHookUnavailableLogged)
+            {
+                _sceneCompositeHookUnavailableLogged = true;
+                PctService.Log.Warning($"[Pictomancy] SceneComposite cannot flush because the OMSetRenderTargets hook is unavailable. {SceneCompositeStatus}");
+            }
         }
     }
 
     internal void CancelSceneComposite(string reason)
     {
-        if (!_sceneCompositePending)
-            return;
+        lock (_sceneCompositeGate)
+        {
+            if (!_sceneCompositePending)
+                return;
 
-        PctService.Log.Warning($"[Pictomancy] SceneComposite pending render cancelled: {reason}. {SceneCompositeStatus}");
-        _sceneCompositePending = false;
-        _sceneCompositeDepth = null;
-        _sceneCompositeInfo = null;
-        _sceneCompositeNormal = null;
-        _sceneCompositeFrameState = null;
-        _sceneCompositeStallLogged = false;
+            PctService.Log.Warning($"[Pictomancy] SceneComposite pending render cancelled: {reason}. {SceneCompositeStatus}");
+            _sceneCompositePending = false;
+            _sceneCompositeDepth = null;
+            _sceneCompositeInfo = null;
+            _sceneCompositeNormal = null;
+            _sceneCompositeStallLogged = false;
+            DiscardPendingDraws();
+        }
+    }
+
+    private void DiscardPendingDraws()
+    {
+        TriFill.Discard();
+        FanFill?.Discard();
+        Sphere?.Discard();
+        Stroke?.Discard();
+        ClipZone.Discard();
+        ProjectedFanFill?.EndBuilder();
+        ProjectedTriFill?.EndBuilder();
+        Image?.Discard();
+        Sprite?.Discard();
+        _projectedRuns.Clear();
+        RenderContext.DiscardFrame();
     }
 
     private void FlushSceneCompositeFromHook()
     {
-        if (!_sceneCompositePending || _sceneCompositeFlushing)
-            return;
-
-        if (_sceneCompositeDepth == null || _sceneCompositeInfo == null || _sceneCompositeNormal == null)
-            return;
-
-        _sceneCompositePending = false;
-        _sceneCompositeFlushing = true;
-
-        var previousHints = PctService.Hints;
-        PctService.Hints = _sceneCompositeHints;
-        try
+        lock (_sceneCompositeGate)
         {
-            BeginFrame(_sceneCompositeFrameState);
-            _sceneCompositeDepth.Update();
-            _sceneCompositeInfo.Update();
-            _sceneCompositeNormal.Update();
-            EndFrame(
-                _sceneCompositeDepth.SRV,
-                _sceneCompositeDepth.UvScale,
-                _sceneCompositeInfo.SRV,
-                _sceneCompositeNormal.SRV,
-                compositeToBackBuffer: true);
-            _lastSceneCompositeFlushUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            _sceneCompositeFlushCount++;
-            _sceneCompositeStallLogged = false;
-        }
-        catch (Exception e)
-        {
-            PctService.Log.Error(e, "[Pictomancy] SceneComposite flush failed.");
-        }
-        finally
-        {
-            PctService.Hints = previousHints;
-            _sceneCompositeDepth = null;
-            _sceneCompositeInfo = null;
-            _sceneCompositeNormal = null;
-            _sceneCompositeFrameState = null;
-            _sceneCompositeFlushing = false;
+            if (!_sceneCompositePending || _sceneCompositeFlushing)
+                return;
+
+            if (_sceneCompositeDepth == null || _sceneCompositeInfo == null || _sceneCompositeNormal == null)
+                return;
+
+            _sceneCompositeFlushing = true;
+            _sceneCompositePending = false;
+
+            var previousHints = PctService.Hints;
+            PctService.Hints = _sceneCompositeHints;
+            try
+            {
+                // Camera, viewport, and depth must all be sampled at this render pass.
+                BeginFrame();
+                _sceneCompositeDepth.Update();
+                _sceneCompositeInfo.Update();
+                _sceneCompositeNormal.Update();
+                EndFrame(
+                    _sceneCompositeDepth.SRV,
+                    _sceneCompositeDepth.UvScale,
+                    _sceneCompositeInfo.SRV,
+                    _sceneCompositeNormal.SRV,
+                    compositeToBackBuffer: true);
+                _lastSceneCompositeFlushUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                _sceneCompositeFlushCount++;
+                _sceneCompositeStallLogged = false;
+            }
+            catch (Exception e)
+            {
+                RenderFailures.Report(e);
+                PctService.Log.Error(e, "[Pictomancy] SceneComposite flush failed.");
+            }
+            finally
+            {
+                PctService.Hints = previousHints;
+                _sceneCompositeDepth = null;
+                _sceneCompositeInfo = null;
+                _sceneCompositeNormal = null;
+                _sceneCompositeFlushing = false;
+            }
         }
     }
 

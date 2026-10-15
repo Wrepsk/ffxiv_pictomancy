@@ -16,12 +16,45 @@ internal class RenderContext : IDisposable
     }
     private readonly Dictionary<IntPtr, CacheEntry> _userSrvCache = new();
     private int _frameCounter;
+    private readonly bool _ownsDevice;
     private const int UserSrvTtlFrames = 120;
 
     public unsafe RenderContext()
+        : this(AcquireGameDevice(), ownsDevice: true)
     {
-        Device = new((nint)FFXIVClientStructs.FFXIV.Client.Graphics.Kernel.Device.Instance()->D3D11Forwarder);
-        Context = new(Device);
+    }
+
+    internal RenderContext(SharpDX.Direct3D11.Device device, bool ownsDevice = false)
+    {
+        Device = device;
+        _ownsDevice = ownsDevice;
+        try
+        {
+            Context = new(Device);
+        }
+        catch
+        {
+            if (_ownsDevice) Device.Dispose();
+            throw;
+        }
+    }
+
+    private static unsafe SharpDX.Direct3D11.Device AcquireGameDevice()
+    {
+        var gameDevice = FFXIVClientStructs.FFXIV.Client.Graphics.Kernel.Device.Instance();
+        var pointer = gameDevice == null ? nint.Zero : (nint)gameDevice->D3D11Forwarder;
+        if (pointer == nint.Zero)
+            throw new InvalidOperationException("The game D3D11 device is unavailable.");
+        Marshal.AddRef(pointer);
+        try
+        {
+            return new SharpDX.Direct3D11.Device(pointer);
+        }
+        catch
+        {
+            Marshal.Release(pointer);
+            throw;
+        }
     }
 
     public void Dispose()
@@ -30,12 +63,19 @@ internal class RenderContext : IDisposable
             entry.Srv.Dispose();
         _userSrvCache.Clear();
         Context.Dispose();
+        if (_ownsDevice) Device.Dispose();
     }
 
     public void Execute()
     {
         using var cmds = Context.FinishCommandList(true);
         Device.ImmediateContext.ExecuteCommandList(cmds, true);
+        Context.ClearState();
+    }
+
+    public void DiscardFrame()
+    {
+        using var commands = Context.FinishCommandList(false);
         Context.ClearState();
     }
 

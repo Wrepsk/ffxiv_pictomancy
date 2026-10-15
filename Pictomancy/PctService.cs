@@ -38,11 +38,15 @@ public class PctService
     private static bool _initialized;
     private static bool _kamiInitialized;
     private static bool _vfxFrameworkSubscribed;
+    private static long _initializationGeneration;
 
     public static string SceneCompositeStatus => _dxRenderer?.SceneCompositeStatus ?? "scene composite unavailable: DX renderer is not initialized";
     public static bool IsSceneCompositeHookUnavailable => _dxRenderer?.IsSceneCompositeHookUnavailable ?? true;
     public static bool IsSceneCompositeStalled(TimeSpan maxPendingAge) => _dxRenderer?.IsSceneCompositeStalled(maxPendingAge) == true;
     public static void CancelSceneComposite(string reason) => _dxRenderer?.CancelSceneComposite(reason);
+    public static void ThrowIfRenderFailed() => _dxRenderer?.RenderFailures.ThrowIfFailed();
+    public static bool IsNativeOverlayAvailable => _overlayNode != null;
+    public static bool IsSceneCompositePending => _dxRenderer?.HasPendingSceneComposite == true;
 
     /// <summary>Hide the native overlay node without rendering another frame.</summary>
     [SupportedOSPlatform("windows7.0")]
@@ -60,36 +64,47 @@ public class PctService
         options ??= new PctOptions();
         pluginInterface.Create<PctService>();
         _initialized = true;
+        var generation = Interlocked.Increment(ref _initializationGeneration);
 
-        if (options.EnableDxRenderer)
+        try
         {
-            if (options.EnableKtkOutput)
+            if (options.EnableDxRenderer)
             {
-                KamiToolKitLibrary.Initialize(pluginInterface, "PctOverlay");
-                _kamiInitialized = true;
-                Framework.RunOnFrameworkThread(() =>
+                if (options.EnableKtkOutput)
                 {
-                    _overlayController = new();
-                    _overlayNode = new();
-                    _overlayController.AddNode(_overlayNode);
-                });
+                    KamiToolKitLibrary.Initialize(pluginInterface, "PctOverlay");
+                    _kamiInitialized = true;
+                    Framework.RunOnFrameworkThread(() =>
+                    {
+                        if (!_initialized || generation != Interlocked.Read(ref _initializationGeneration))
+                            return;
+                        _overlayController = new();
+                        _overlayNode = new();
+                        _overlayController.AddNode(_overlayNode);
+                    });
+                }
+
+                _dxRenderer = new(options);
+                _sceneDepth = new();
+                _sceneInfo = new();
+                _sceneNormal = new();
             }
 
-            _dxRenderer = new(options);
-            _sceneDepth = new();
-            _sceneInfo = new();
-            _sceneNormal = new();
-        }
+            if (options.EnableVfxRenderer)
+            {
+                _vfxRenderer = new();
+                VfxFunctions.Initialize();
+                Framework.Update += Update;
+                _vfxFrameworkSubscribed = true;
+            }
 
-        if (options.EnableVfxRenderer)
+            return new PctContext();
+        }
+        catch
         {
-            _vfxRenderer = new();
-            VfxFunctions.Initialize();
-            Framework.Update += Update;
-            _vfxFrameworkSubscribed = true;
+            DisposeInternal();
+            throw;
         }
-
-        return new PctContext();
     }
 
     /// <summary>
@@ -101,6 +116,7 @@ public class PctService
     {
         if (!_initialized) return;
         _initialized = false;
+        Interlocked.Increment(ref _initializationGeneration);
 
         _overlayController?.Dispose();
         _overlayController = null;
